@@ -27,16 +27,12 @@ initialize_server() {
 
   # Update and install necessary packages
   sudo apt-get update
-  sudo apt-get install -y ca-certificates curl gnupg lsb-release apache2-utils
+  sudo apt-get install -y ca-certificates curl gnupg lsb-release apache2-utils 
 
   # Install Docker
-  sudo mkdir -p /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  echo \
-    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-    $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
   sudo apt-get update
-  sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  sudo apt-get install -y docker.io docker-compose git
 
   # Start and enable Docker
   sudo systemctl start docker
@@ -48,8 +44,10 @@ initialize_server() {
   mkdir -p ~/projects/nginx_conf ~/projects/letsencrypt ~/projects/web
 
   # Install acme.sh
+  sudo apt install -y socat
   curl https://get.acme.sh | sh
-  source ~/.bashrc
+   source ~/.bashrc
+
 
   # Generate initial docker-compose.yml
   cat <<EOL > ~/projects/docker-compose.yml
@@ -57,7 +55,6 @@ services:
   mariadb:
     image: mariadb:latest
     container_name: mariadb
-    platform: linux/$cpu_arch
     environment:
       MYSQL_ROOT_PASSWORD: your_root_password
     volumes:
