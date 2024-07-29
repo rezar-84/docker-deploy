@@ -10,6 +10,11 @@ configure_cloudflare() {
   read -s CF_Token
   echo "Enter your Cloudflare Account ID:"
   read CF_Account_ID
+
+  # Store Cloudflare credentials for acme.sh
+  echo "export CF_Token=$CF_Token" >> ~/.bashrc
+  echo "export CF_Account_ID=$CF_Account_ID" >> ~/.bashrc
+  source ~/.bashrc
 }
 
 # Function to install and initialize server
@@ -48,8 +53,6 @@ initialize_server() {
 
   # Generate initial docker-compose.yml
   cat <<EOL > ~/projects/docker-compose.yml
-version: '3.8'
-
 services:
   mariadb:
     image: mariadb:latest
@@ -94,6 +97,7 @@ list_domains() {
     echo "$((i+1)). ${domains[$i]}"
   done
   echo "0. Add new domain"
+  echo "q. Quit"
 }
 
 # Function to create Docker Compose service for a new website
@@ -102,12 +106,11 @@ create_docker_compose_service() {
   local dbname=$2
   local dbuser=$3
   local dbpass=$4
-  local git_repo=$5
-  local webroot=$6
+  local webroot=$5
 
   # Add service configuration for the new website in docker-compose.yml
-  if ! grep -q "${domain}_apache" docker-compose.yml; then
-    cat <<EOL >> docker-compose.yml
+  if ! grep -q "${domain}_apache" ~/projects/docker-compose.yml; then
+    cat <<EOL >> ~/projects/docker-compose.yml
 
   ${domain}_apache:
     image: drupal:latest
@@ -125,6 +128,8 @@ EOL
   else
     echo "Service for ${domain} already exists in docker-compose.yml"
   fi
+
+  update_docker_compose_nginx
 }
 
 # Function to create Nginx configuration for a new website
@@ -172,8 +177,8 @@ EOL
 
 # Function to update docker-compose.yml to include Nginx service if not already done
 update_docker_compose_nginx() {
-  if ! grep -q "nginx:" docker-compose.yml; then
-    cat <<EOL >> docker-compose.yml
+  if ! grep -q "nginx:" ~/projects/docker-compose.yml; then
+    cat <<EOL >> ~/projects/docker-compose.yml
 
   nginx:
     image: nginx:latest
@@ -188,6 +193,14 @@ update_docker_compose_nginx() {
       - mariadb
 EOL
   fi
+
+  # Add domain services as dependencies
+  local domains=($(ls ./nginx_conf | sed 's/\.conf$//'))
+  for domain in "${domains[@]}"; do
+    if ! grep -q "${domain}_apache" ~/projects/docker-compose.yml; then
+      echo "  - ${domain}_apache" >> ~/projects/docker-compose.yml
+    fi
+  done
 }
 
 # Function to create the necessary directories
@@ -282,111 +295,124 @@ EOL
   echo "Security measures applied."
 }
 
-# Main script execution
-echo "Choose an action:"
-echo "1. Configure Cloudflare"
-echo "2. Initialize Server"
-echo "3. Add/Edit Domain"
-echo "4. Apply Security Measures"
-read choice
+# Main menu function
+main_menu() {
+  while true; do
+    echo "Choose an action:"
+    echo "1. Configure Cloudflare"
+    echo "2. Initialize Server"
+    echo "3. Add/Edit Domain"
+    echo "4. Apply Security Measures"
+    echo "q. Quit"
+    read choice
 
-case $choice in
-  1)
-    configure_cloudflare
-    ;;
-  2)
-    initialize_server
-    ;;
-  3)
-    echo "Enter the action: (a)dd new domain or (e)dit existing domain"
-    read action
+    case $choice in
+      1)
+        configure_cloudflare
+        ;;
+      2)
+        initialize_server
+        ;;
+      3)
+        echo "Enter the action: (a)dd new domain or (e)dit existing domain"
+        read action
 
-    if [ "$action" == "a" ]; then
-      echo "Enter the new domain name:"
-      read domain
+        if [ "$action" == "a" ]; then
+          echo "Enter the new domain name:"
+          read domain
 
-      echo "Enter the database name:"
-      read dbname
-
-      echo "Enter the database user:"
-      read dbuser
-
-      echo "Enter the database password:"
-      read -s dbpass
-
-      echo "Enter the Git repository URL for the website:"
-      read git_repo
-
-      echo "Enter the web root directory (e.g., /var/www/html):"
-      read webroot
-
-      create_directories $domain
-      create_database $dbname $dbuser $dbpass
-      create_docker_compose_service $domain $dbname $dbuser $dbpass $git_repo $webroot
-      create_nginx_conf $domain
-      update_docker_compose_nginx
-
-      echo "Enter the server IP address for DNS update:"
-      read server_ip
-
-      update_cloudflare_dns $domain $server_ip
-      issue_ssl_certificate $domain
-
-      echo "Starting Docker Compose services..."
-      docker-compose up -d
-
-      echo "Domain $domain has been successfully set up."
-    else
-      echo "Listing available domains..."
-      list_domains
-      echo "Enter the number of the domain you want to edit:"
-      read domain_number
-
-      if [ "$domain_number" -eq 0 ]; then
-        echo "You chose to add a new domain. Running the setup for a new domain..."
-        $0
-      else
-        local domains=($(ls ./nginx_conf | sed 's/\.conf$//'))
-        local domain=${domains[$((domain_number-1))]}
-
-        echo "You chose to edit the domain: $domain"
-        echo "Do you want to (c)reate a new database or (u)pdate existing settings? (c/u)"
-        read edit_action
-
-        if [ "$edit_action" == "c" ]; then
-          echo "Enter the new database name:"
+          echo "Enter the database name:"
           read dbname
 
-          echo "Enter the new database user:"
+          echo "Enter the database user:"
           read dbuser
 
-          echo "Enter the new database password:"
+          echo "Enter the database password:"
           read -s dbpass
 
+          echo "Enter the relative web root directory (e.g., docroot for web/domain/docroot):"
+          read webroot
+
+          create_directories $domain
           create_database $dbname $dbuser $dbpass
+          create_docker_compose_service $domain $dbname $dbuser $dbpass $webroot
+          create_nginx_conf $domain
+          update_docker_compose_nginx
+
+          echo "Enter the server IP address for DNS update:"
+          read server_ip
+
+          update_cloudflare_dns $domain $server_ip
+          issue_ssl_certificate $domain
+
+          echo "Starting Docker Compose services..."
+          docker-compose up -d
+
+          echo "Domain $domain has been successfully set up."
+        else
+          echo "Listing available domains..."
+          list_domains
+          echo "Enter the number of the domain you want to edit or 'q' to quit:"
+          read domain_number
+
+          if [ "$domain_number" == "q" ]; then
+            continue
+          fi
+
+          if [ "$domain_number" -eq 0 ]; then
+            echo "You chose to add a new domain. Running the setup for a new domain..."
+            $0
+          else
+            local domains=($(ls ./nginx_conf | sed 's/\.conf$//'))
+            local domain=${domains[$((domain_number-1))]}
+
+            echo "You chose to edit the domain: $domain"
+            echo "Do you want to (c)reate a new database or (u)pdate existing settings? (c/u)"
+            read edit_action
+
+            if [ "$edit_action" == "c" ]; then
+              echo "Enter the new database name:"
+              read dbname
+
+              echo "Enter the new database user:"
+              read dbuser
+
+              echo "Enter the new database password:"
+              read -s dbpass
+
+              create_database $dbname $dbuser $dbpass
+            fi
+
+            echo "Updating SSL certificate and DNS settings for $domain..."
+            issue_ssl_certificate $domain
+
+            echo "Enter the server IP address for DNS update:"
+            read server_ip
+
+            update_cloudflare_dns $domain $server_ip
+
+            echo "Restarting Docker Compose services..."
+            docker-compose down
+            docker-compose up -d
+
+            echo "Domain $domain has been successfully updated."
+          fi
         fi
+        ;;
+      4)
+        apply_security_measures
+        ;;
+      q)
+        echo "Quitting..."
+        exit 0
+        ;;
+      *)
+        echo "Invalid choice"
+        ;;
+    esac
+  done
+}
 
-        echo "Updating SSL certificate and DNS settings for $domain..."
-        issue_ssl_certificate $domain
-
-        echo "Enter the server IP address for DNS update:"
-        read server_ip
-
-        update_cloudflare_dns $domain $server_ip
-
-        echo "Restarting Docker Compose services..."
-        docker-compose down
-        docker-compose up -d
-
-        echo "Domain $domain has been successfully updated."
-      fi
-    fi
-    ;;
-  4)
-    apply_security_measures
-    ;;
-  *)
-    echo "Invalid choice"
-    ;;
-esac
+# Start the main menu
+main_menu
 
