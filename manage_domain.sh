@@ -4,10 +4,22 @@
 export CF_Token=""
 export CF_Account_ID=""
 
+# Function to configure Cloudflare credentials
+configure_cloudflare() {
+  echo "Enter your Cloudflare API token:"
+  read -s CF_Token
+  echo "Enter your Cloudflare Account ID:"
+  read CF_Account_ID
+}
+
 # Function to install and initialize server
 initialize_server() {
   echo "Initializing the server..."
-  
+
+  # Ask for CPU architecture
+  echo "Enter CPU architecture (amd64/arm64):"
+  read cpu_arch
+
   # Update and install necessary packages
   sudo apt-get update
   sudo apt-get install -y ca-certificates curl gnupg lsb-release apache2-utils
@@ -20,7 +32,7 @@ initialize_server() {
     $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
   sudo apt-get update
   sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-  
+
   # Start and enable Docker
   sudo systemctl start docker
   sudo systemctl enable docker
@@ -33,6 +45,43 @@ initialize_server() {
   # Install acme.sh
   curl https://get.acme.sh | sh
   source ~/.bashrc
+
+  # Generate initial docker-compose.yml
+  cat <<EOL > ~/projects/docker-compose.yml
+version: '3.8'
+
+services:
+  mariadb:
+    image: mariadb:latest
+    container_name: mariadb
+    platform: linux/$cpu_arch
+    environment:
+      MYSQL_ROOT_PASSWORD: your_root_password
+    volumes:
+      - db_data:/var/lib/mysql
+
+  phpmyadmin:
+    image: ${cpu_arch}-specific-image
+    container_name: phpmyadmin
+    platform: linux/$cpu_arch
+    environment:
+      PMA_HOST: mariadb
+      PMA_USER: your_root_user
+      PMA_PASSWORD: your_root_password
+    ports:
+      - "8080:80"
+    depends_on:
+      - mariadb
+
+volumes:
+  db_data:
+EOL
+
+  if [ "$cpu_arch" == "arm64" ]; then
+    sed -i 's/${cpu_arch}-specific-image/arm64v8\/phpmyadmin:latest/' ~/projects/docker-compose.yml
+  else
+    sed -i 's/${cpu_arch}-specific-image/phpmyadmin\/phpmyadmin:latest/' ~/projects/docker-compose.yml
+  fi
 
   echo "Server initialization complete."
 }
@@ -201,135 +250,143 @@ create_database() {
   docker exec mariadb mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "FLUSH PRIVILEGES;"
 }
 
-# Main script
-echo "Choose an option:"
-echo "1. Initialize server"
-echo "2. Update current domains"
-echo "3. Add new domain"
-echo "4. Remove existing domain"
-read option
+# Function to apply security measures
+apply_security_measures() {
+  echo "Applying security measures..."
 
-if [[ "$option" == "1" ]]; then
-  initialize_server
+  # Secure MySQL installation
+  docker exec -it mariadb mysql_secure_installation
 
-  echo "Do you want to use Cloudflare for SSL? (y/n)"
-  read use_cf
-  if [[ "$use_cf" == "y" ]]; then
-    echo "Enter Cloudflare Token:"
-    read CF_Token
-    echo "Enter Cloudflare Account ID:"
-    read CF_Account_ID
-  fi
+  # Configure Docker to use user namespaces for better security
+  sudo mkdir -p /etc/systemd/system/docker.service.d
+  cat <<EOL | sudo tee /etc/systemd/system/docker.service.d/override.conf
+[Service]
+ExecStart=
+ExecStart=/usr/bin/dockerd --userns-remap=default
+EOL
+  sudo systemctl daemon-reload
+  sudo systemctl restart docker
 
-  echo "Server initialized successfully."
+  # Store passwords securely
+  echo "Enter the path to store secure passwords (e.g., /etc/secure):"
+  read secure_path
+  mkdir -p $secure_path
+  chmod 700 $secure_path
 
-elif [[ "$option" == "2" ]]; then
-  list_domains
-  echo "Select the domain you want to update:"
-  read selection
+  # Example of storing MySQL root password securely
+  echo "Enter MySQL root password:"
+  read -s mysql_root_password
+  echo $mysql_root_password > $secure_path/mysql_root_password.txt
+  chmod 600 $secure_path/mysql_root_password.txt
 
-  domains=($(ls ./nginx_conf | sed 's/\.conf$//'))
-  domain=${domains[$((selection-1))]}
+  echo "Security measures applied."
+}
 
-  echo "Editing domain: $domain"
-  echo "Enter the new IP address for the domain (leave blank to keep current):"
-  read ip
+# Main script execution
+echo "Choose an action:"
+echo "1. Configure Cloudflare"
+echo "2. Initialize Server"
+echo "3. Add/Edit Domain"
+echo "4. Apply Security Measures"
+read choice
 
-  if [[ -n "$ip" ]]; then
-    update_cloudflare_dns $domain $ip
-  fi
+case $choice in
+  1)
+    configure_cloudflare
+    ;;
+  2)
+    initialize_server
+    ;;
+  3)
+    echo "Enter the action: (a)dd new domain or (e)dit existing domain"
+    read action
 
-  echo "Enter the new database name for the website (leave blank to keep current):"
-  read dbname
+    if [ "$action" == "a" ]; then
+      echo "Enter the new domain name:"
+      read domain
 
-  echo "Enter the new database user for the website (leave blank to keep current):"
-  read dbuser
+      echo "Enter the database name:"
+      read dbname
 
-  echo "Enter the new database password for the website (leave blank to keep current):"
-  read -s dbpass
+      echo "Enter the database user:"
+      read dbuser
 
-  if [[ -n "$dbname" && -n "$dbuser" && -n "$dbpass" ]]; then
-    create_database $dbname $dbuser $dbpass
-  fi
+      echo "Enter the database password:"
+      read -s dbpass
 
-  # Reissue SSL certificate
-  issue_ssl_certificate $domain
+      echo "Enter the Git repository URL for the website:"
+      read git_repo
 
-  echo "Configuration for ${domain} updated successfully."
+      echo "Enter the web root directory (e.g., /var/www/html):"
+      read webroot
 
-elif [[ "$option" == "3" ]]; then
-  echo "Enter the domain name for the new website:"
-  read domain
+      create_directories $domain
+      create_database $dbname $dbuser $dbpass
+      create_docker_compose_service $domain $dbname $dbuser $dbpass $git_repo $webroot
+      create_nginx_conf $domain
+      update_docker_compose_nginx
 
-  echo "Enter the IP address for the new domain:"
-  read ip
+      echo "Enter the server IP address for DNS update:"
+      read server_ip
 
-  echo "Enter the Git repository address for the website:"
-  read git_repo
+      update_cloudflare_dns $domain $server_ip
+      issue_ssl_certificate $domain
 
-  echo "Enter the webroot folder for the website:"
-  read webroot
+      echo "Starting Docker Compose services..."
+      docker-compose up -d
 
-  echo "Enter the database name for the new website:"
-  read dbname
+      echo "Domain $domain has been successfully set up."
+    else
+      echo "Listing available domains..."
+      list_domains
+      echo "Enter the number of the domain you want to edit:"
+      read domain_number
 
-  echo "Enter the database user for the new website:"
-  read dbuser
+      if [ "$domain_number" -eq 0 ]; then
+        echo "You chose to add a new domain. Running the setup for a new domain..."
+        $0
+      else
+        local domains=($(ls ./nginx_conf | sed 's/\.conf$//'))
+        local domain=${domains[$((domain_number-1))]}
 
-  echo "Enter the database password for the new website:"
-  read -s dbpass
+        echo "You chose to edit the domain: $domain"
+        echo "Do you want to (c)reate a new database or (u)pdate existing settings? (c/u)"
+        read edit_action
 
-  # Create directories for the new website
-  create_directories $domain
+        if [ "$edit_action" == "c" ]; then
+          echo "Enter the new database name:"
+          read dbname
 
-  # Create Docker Compose service for the new website
-  create_docker_compose_service $domain $dbname $dbuser $dbpass $git_repo $webroot
+          echo "Enter the new database user:"
+          read dbuser
 
-  # Create Nginx configuration for the new website
-  create_nginx_conf $domain
+          echo "Enter the new database password:"
+          read -s dbpass
 
-  # Update Docker Compose to include Nginx service if not already done
-  update_docker_compose_nginx
+          create_database $dbname $dbuser $dbpass
+        fi
 
-  # Create database and user
-  create_database $dbname $dbuser $dbpass
+        echo "Updating SSL certificate and DNS settings for $domain..."
+        issue_ssl_certificate $domain
 
-  # Issue SSL certificate
-  issue_ssl_certificate $domain
+        echo "Enter the server IP address for DNS update:"
+        read server_ip
 
-  # Update Cloudflare DNS
-  update_cloudflare_dns $domain $ip
+        update_cloudflare_dns $domain $server_ip
 
-  echo "Setup for ${domain} completed successfully."
+        echo "Restarting Docker Compose services..."
+        docker-compose down
+        docker-compose up -d
 
-elif [[ "$option" == "4" ]]; then
-  list_domains
-  echo "Select the domain you want to remove:"
-  read selection
+        echo "Domain $domain has been successfully updated."
+      fi
+    fi
+    ;;
+  4)
+    apply_security_measures
+    ;;
+  *)
+    echo "Invalid choice"
+    ;;
+esac
 
-  domains=($(ls ./nginx_conf | sed 's/\.conf$//'))
-  domain=${domains[$((selection-1))]}
-
-  echo "Removing domain: $domain"
-
-  # Remove Nginx configuration
-  rm ./nginx_conf/${domain}.conf
-
-  # Remove web directory
-  rm -rf ./web/${domain}
-
-  # Remove Docker Compose service
-  sed -i "/${domain}_apache:/,/depends_on: mariadb/d" docker-compose.yml
-
-  # Remove SSL certificates
-  rm -rf ./letsencrypt/${domain}
-
-  echo "Domain ${domain} removed successfully."
-else
-  echo "Invalid option. Please choose a valid option."
-fi
-
-# Reload Nginx to apply the new configuration
-docker-compose restart nginx
-
-echo "Nginx configuration reloaded."
