@@ -26,7 +26,7 @@ initialize_server() {
   read cpu_arch
 
   # Update and install necessary packages
-  sudo apt-get update
+  sudo apt-get update && upgrade
   sudo apt-get install -y ca-certificates curl gnupg lsb-release apache2-utils 
 
   # Install Docker
