@@ -91,7 +91,7 @@ EOL
 
 # Function to list available domains
 list_domains() {
-  local domains=($(ls ./nginx_conf | sed 's/\.conf$//'))
+  local domains=($(ls ~/projects/nginx_conf | sed 's/\.conf$//'))
   echo "Available domains:"
   for i in "${!domains[@]}"; do
     echo "$((i+1)). ${domains[$i]}"
@@ -137,8 +137,8 @@ create_nginx_conf() {
   local domain=$1
 
   # Create Nginx server block configuration
-  if [ ! -f "./nginx_conf/${domain}.conf" ]; then
-    cat <<EOL > ./nginx_conf/${domain}.conf
+  if [ ! -f "~/projects/nginx_conf/${domain}.conf" ]; then
+    cat <<EOL > ~/projects/nginx_conf/${domain}.conf
 server {
     listen 80;
     server_name ${domain};
@@ -195,7 +195,7 @@ EOL
   fi
 
   # Add domain services as dependencies
-  local domains=($(ls ./nginx_conf | sed 's/\.conf$//'))
+  local domains=($(ls ~/projects/nginx_conf | sed 's/\.conf$//'))
   for domain in "${domains[@]}"; do
     if ! grep -q "${domain}_apache" ~/projects/docker-compose.yml; then
       echo "  - ${domain}_apache" >> ~/projects/docker-compose.yml
@@ -206,9 +206,9 @@ EOL
 # Function to create the necessary directories
 create_directories() {
   local domain=$1
-  mkdir -p web/${domain}
-  mkdir -p nginx_conf
-  mkdir -p letsencrypt/${domain}
+  mkdir -p ~/projects/web/${domain}
+  mkdir -p ~/projects/nginx_conf
+  mkdir -p ~/projects/letsencrypt/${domain}
 }
 
 # Function to issue SSL certificates using acme.sh
@@ -257,10 +257,10 @@ create_database() {
   local dbuser=$2
   local dbpass=$3
 
-  docker exec mariadb mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "CREATE DATABASE IF NOT EXISTS ${dbname};"
-  docker exec mariadb mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "CREATE USER IF NOT EXISTS '${dbuser}'@'%' IDENTIFIED BY '${dbpass}';"
-  docker exec mariadb mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "GRANT ALL PRIVILEGES ON ${dbname}.* TO '${dbuser}'@'%';"
-  docker exec mariadb mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "FLUSH PRIVILEGES;"
+  docker exec mariadb mysql -u root -p"your_root_password" -e "CREATE DATABASE IF NOT EXISTS ${dbname};"
+  docker exec mariadb mysql -u root -p"your_root_password" -e "CREATE USER IF NOT EXISTS '${dbuser}'@'%' IDENTIFIED BY '${dbpass}';"
+  docker exec mariadb mysql -u root -p"your_root_password" -e "GRANT ALL PRIVILEGES ON ${dbname}.* TO '${dbuser}'@'%';"
+  docker exec mariadb mysql -u root -p"your_root_password" -e "FLUSH PRIVILEGES;"
 }
 
 # Function to apply security measures
@@ -334,6 +334,10 @@ main_menu() {
           read webroot
 
           create_directories $domain
+
+          # Start Docker services to ensure mariadb is running before database operations
+          docker-compose -f ~/projects/docker-compose.yml up -d
+
           create_database $dbname $dbuser $dbpass
           create_docker_compose_service $domain $dbname $dbuser $dbpass $webroot
           create_nginx_conf $domain
@@ -345,8 +349,9 @@ main_menu() {
           update_cloudflare_dns $domain $server_ip
           issue_ssl_certificate $domain
 
-          echo "Starting Docker Compose services..."
-          docker-compose up -d
+          echo "Restarting Docker Compose services..."
+          docker-compose -f ~/projects/docker-compose.yml down
+          docker-compose -f ~/projects/docker-compose.yml up -d
 
           echo "Domain $domain has been successfully set up."
         else
@@ -363,7 +368,7 @@ main_menu() {
             echo "You chose to add a new domain. Running the setup for a new domain..."
             $0
           else
-            local domains=($(ls ./nginx_conf | sed 's/\.conf$//'))
+            local domains=($(ls ~/projects/nginx_conf | sed 's/\.conf$//'))
             local domain=${domains[$((domain_number-1))]}
 
             echo "You chose to edit the domain: $domain"
@@ -392,8 +397,8 @@ main_menu() {
             update_cloudflare_dns $domain $server_ip
 
             echo "Restarting Docker Compose services..."
-            docker-compose down
-            docker-compose up -d
+            docker-compose -f ~/projects/docker-compose.yml down
+            docker-compose -f ~/projects/docker-compose.yml up -d
 
             echo "Domain $domain has been successfully updated."
           fi
