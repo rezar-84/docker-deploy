@@ -76,6 +76,18 @@ services:
     depends_on:
       - mariadb
 
+  nginx:
+    image: nginx:latest
+    container_name: nginx
+    volumes:
+      - ./nginx_conf:/etc/nginx/conf.d
+      - ./letsencrypt:/etc/letsencrypt
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - mariadb
+
 volumes:
   db_data:
 EOL
@@ -128,8 +140,6 @@ EOL
   else
     echo "Service for ${domain} already exists in docker-compose.yml"
   fi
-
-  update_docker_compose_nginx
 }
 
 # Function to create Nginx configuration for a new website
@@ -263,6 +273,23 @@ create_database() {
   docker exec mariadb mysql -u root -p"your_root_password" -e "FLUSH PRIVILEGES;"
 }
 
+# Function to remove a website
+remove_website() {
+  local domain=$1
+
+  # Remove the website service from docker-compose.yml
+  sed -i "/${domain}_apache:/,/depends_on:/d" ~/projects/docker-compose.yml
+
+  # Remove the Nginx configuration file
+  rm -f ~/projects/nginx_conf/${domain}.conf
+
+  # Remove the website directory
+  rm -rf ~/projects/web/${domain}
+
+  # Remove the SSL certificates
+  rm -rf ~/projects/letsencrypt/${domain}
+}
+
 # Function to apply security measures
 apply_security_measures() {
   echo "Applying security measures..."
@@ -302,7 +329,8 @@ main_menu() {
     echo "1. Configure Cloudflare"
     echo "2. Initialize Server"
     echo "3. Add/Edit Domain"
-    echo "4. Apply Security Measures"
+    echo "4. Remove Domain"
+    echo "5. Apply Security Measures"
     echo "q. Quit"
     read choice
 
@@ -405,6 +433,28 @@ main_menu() {
         fi
         ;;
       4)
+        echo "Listing available domains..."
+        list_domains
+        echo "Enter the number of the domain you want to remove or 'q' to quit:"
+        read domain_number
+
+        if [ "$domain_number" == "q" ]; then
+          continue
+        fi
+
+        local domains=($(ls ~/projects/nginx_conf | sed 's/\.conf$//'))
+        local domain=${domains[$((domain_number-1))]}
+
+        echo "You chose to remove the domain: $domain"
+        remove_website $domain
+
+        echo "Restarting Docker Compose services..."
+        docker-compose -f ~/projects/docker-compose.yml down
+        docker-compose -f ~/projects/docker-compose.yml up -d
+
+        echo "Domain $domain has been successfully removed."
+        ;;
+      5)
         apply_security_measures
         ;;
       q)
